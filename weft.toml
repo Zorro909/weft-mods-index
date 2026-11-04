@@ -1,0 +1,32 @@
+# Weft releases and the mod ABI hash of each: FNV-1a-64 of crates/abi/src/lib.rs at the commit.
+# Becomes the index's `weft[]`. `python3 -m weftindex sync-weft` adds new releases.
+
+[[release]]
+tag = "v26.11.1"
+commit = "ff9c7128511fc0dce7719b67c9a59274d70bdd5a"
+abi = "f470b1cbb1f9ad91"
+
+[[release]]
+tag = "v26.10.4"
+commit = "34fa22b1b6546aa8a8d3d12252bd7a5b01dbb0ec"
+abi = "5f0569a6bea71b81"
+
+[[release]]
+tag = "v26.10.3"
+commit = "7e32b4217b6ada9ae6567845256caf42d203fdeb"
+abi = "0c4348eac3c90c5c"
+
+[[release]]
+tag = "v26.10.2"
+commit = "23d2a3b5fa95a674c993ae9f115851e8318c3c8c"
+abi = "7f70a596eee22b6f"
+
+[[release]]
+tag = "v26.10.1"
+commit = "d444d448770c5648d452fe76ebe4e1166322d67e"
+abi = "7f70a596eee22b6f"
+
+[[release]]
+tag = "v0.1.0"
+commit = "54a5829f3c25fc6975379f6421cd64c9d0e378b0"
+abi = "27b2fc40e2fd67eb"
