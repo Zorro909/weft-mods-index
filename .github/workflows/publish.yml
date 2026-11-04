@@ -1,13 +1,18 @@
-# On every push to main: test, validate, re-verify every pinned asset, build `v1/index.json`,
+# On every push to main, and weekly: test, validate, re-verify every pinned asset, build `v1/index.json`,
 # sign it with minisign, and deploy it to GitHub Pages:
 #   https://zorro909.github.io/weft-mods-index/v1/index.json
 #   https://zorro909.github.io/weft-mods-index/v1/index.json.minisig
 # The signing key is only in the `index-signing` environment, which only main can deploy to.
+# The weekly run re-signs unchanged content with a new timestamp: the launcher treats an index
+# signed more than 30 days ago as stale, so an attacker can't keep serving an old, valid copy
+# (one that predates a revocation) without the launcher saying so.
 name: Publish
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 4 * * 1"
   workflow_dispatch:
 
 permissions:

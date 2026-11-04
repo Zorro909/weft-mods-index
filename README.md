@@ -153,6 +153,7 @@ A reviewer approves a PR only after checking these:
 3. Offers only versions whose `weft.abi` equals the ABI of the player's Weft version. `weft[]` gives that ABI per release, so the launcher doesn't have to hash it.
 4. Downloads `asset.url`, which must be under `https://github.com/<source.repo>/releases/download/`, and installs it only if its sha256 equals `asset.sha256`.
 5. Never installs a sha256 listed in `revoked`, and turns installed copies off.
+6. Refuses an index older than the newest one it has accepted, by `generated` and by the signature's trusted `timestamp:`, and calls an index signed more than 30 days ago stale. The publish workflow re-signs the index every Monday, so a current index is never stale.
 
 ## Revoking a build
 
