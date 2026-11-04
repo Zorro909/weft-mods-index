@@ -1,0 +1,71 @@
+# On every push to main: test, validate, re-verify every pinned asset, build `v1/index.json`,
+# sign it with minisign, and deploy it to GitHub Pages:
+#   https://zorro909.github.io/weft-mods-index/v1/index.json
+#   https://zorro909.github.io/weft-mods-index/v1/index.json.minisig
+# The signing key is only in the `index-signing` environment, which only main can deploy to.
+name: Publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: index-signing
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -t . -v
+
+      - name: Re-verify every pinned asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m weftindex check
+
+      # `generated` is the commit's time, so a rerun gives the same bytes.
+      - name: Build
+        run: python3 -m weftindex build --out site
+
+      - name: Install minisign
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+
+      - name: Sign
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key" -m site/v1/index.json \
+            -t "timestamp:$(date +%s) file:index.json commit:$GITHUB_SHA"
+          minisign -Vm site/v1/index.json -p keys/index.pub
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}v1/index.json
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

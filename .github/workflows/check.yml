@@ -1,0 +1,40 @@
+# Validates the index and re-verifies what it pins, without signing anything.
+#   - On a pull request: the unit tests, the full validation, and an online re-check of the
+#     version files the PR adds or changes (re-download, re-hash, ABI, provenance).
+#   - Weekly and on demand: the online re-check of every version, so a moved tag or a replaced
+#     asset upstream shows up even when nobody touches this repository.
+name: Check
+
+on:
+  pull_request:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -t . -v
+
+      - name: Validate and build
+        run: python3 -m weftindex build --out dist
+
+      - name: Re-verify pinned assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            python3 -m weftindex check --since "origin/$BASE"
+          else
+            python3 -m weftindex check
+          fi
