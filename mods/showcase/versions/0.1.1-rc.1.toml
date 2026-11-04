@@ -1,0 +1,25 @@
+version = "0.1.1-rc.1"
+channel = "prerelease"
+tag = "showcase-v0.1.1-rc.1"
+published = "2026-11-04T02:39:06Z"
+deps = []
+platforms = ["windows-x64", "linux-x64", "macos-arm64"]
+
+[source]
+repo = "Zorro909/weft-mods"
+commit = "cceea7805df5902d62017d2008d1bb29ed84e152"
+
+[weft]
+tag = "v26.11.1"
+commit = "ff9c7128511fc0dce7719b67c9a59274d70bdd5a"
+abi = "f470b1cbb1f9ad91"
+
+[asset]
+name = "showcase.zip"
+url = "https://github.com/Zorro909/weft-mods/releases/download/showcase-v0.1.1-rc.1/showcase.zip"
+size = 2116303
+sha256 = "97ab1bbbaae5b3664bfa6164810ebe3af8b4590f1a89b860f0800203b1766d30"
+
+[reviewed]
+by = "Zorro909"
+at = "2026-11-04"

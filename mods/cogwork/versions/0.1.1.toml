@@ -1,0 +1,25 @@
+version = "0.1.1"
+channel = "release"
+tag = "cogwork-v0.1.1"
+published = "2026-11-02T14:13:07Z"
+deps = [{ id = "base" }]
+platforms = ["windows-x64", "linux-x64", "macos-arm64"]
+
+[source]
+repo = "Zorro909/weft-mods"
+commit = "5855730cc0a423eee7fd7e0a0eebb67bb8f355ac"
+
+[weft]
+tag = "v26.11.1"
+commit = "ff9c7128511fc0dce7719b67c9a59274d70bdd5a"
+abi = "f470b1cbb1f9ad91"
+
+[asset]
+name = "cogwork.zip"
+url = "https://github.com/Zorro909/weft-mods/releases/download/cogwork-v0.1.1/cogwork.zip"
+size = 2585995
+sha256 = "a35711d9e0188c9e086ac55088283f754d0617f62b4c2a31bcddfe5deed0e65f"
+
+[reviewed]
+by = "Zorro909"
+at = "2026-11-04"

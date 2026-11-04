@@ -1,0 +1,25 @@
+version = "0.1.0"
+channel = "release"
+tag = "structures-v0.1.0"
+published = "2026-11-02T00:54:55Z"
+deps = [{ id = "base" }]
+platforms = ["windows-x64", "linux-x64", "macos-arm64"]
+
+[source]
+repo = "Zorro909/weft-mods"
+commit = "f90064856310bcbfd5f00c9f83d5813a8e3fbb21"
+
+[weft]
+tag = "v26.10.4-56-g5faf2e3"
+commit = "5faf2e3e57697dd3476b03a300f1231b84f6419e"
+abi = "f470b1cbb1f9ad91"
+
+[asset]
+name = "structures.zip"
+url = "https://github.com/Zorro909/weft-mods/releases/download/structures-v0.1.0/structures.zip"
+size = 2268416
+sha256 = "417656fde1e77a2eee43def2cba34dc3a87f3f571c5db6ab34435b9de98381de"
+
+[reviewed]
+by = "Zorro909"
+at = "2026-11-04"
