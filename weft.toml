@@ -2,6 +2,11 @@
 # Becomes the index's `weft[]`. `python3 -m weftindex sync-weft` adds new releases.
 
 [[release]]
+tag = "v26.11.2"
+commit = "2db18c2387c1bb09ecb25871072d4d82c3ee0ab4"
+abi = "d4cb65bd4fa1ac78"
+
+[[release]]
 tag = "v26.11.1"
 commit = "ff9c7128511fc0dce7719b67c9a59274d70bdd5a"
 abi = "f470b1cbb1f9ad91"
