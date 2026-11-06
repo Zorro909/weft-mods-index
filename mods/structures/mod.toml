@@ -1,5 +1,0 @@
-name = "Structures"
-summary = "Generates structures from .wst files in the overworld, alone and as hamlets."
-authors = ["Zorro909"]
-homepage = "https://github.com/Zorro909/weft-mods/tree/main/structures"
-icon = "https://raw.githubusercontent.com/Zorro909/weft-mods/cceea7805df5902d62017d2008d1bb29ed84e152/structures/assets/textures/gui/icon.png"

@@ -1,18 +1,16 @@
 import copy
 import hashlib
 import json
-import tempfile
 import tomllib
 import unittest
 from pathlib import Path
 
+from tests.fixtures import ABI, WEFT, scratch_repo
 from weftindex import model, tomlw
 
 REPO = "Zorro909/weft-mods"
 C1 = "1" * 40
-WEFT = "ff9c7128511fc0dce7719b67c9a59274d70bdd5a"
 WEFT2 = "4563878b067425085701268f074f9483b2625e4c"
-ABI = "f470b1cbb1f9ad91"
 GEN = "2026-11-04T18:00:00Z"
 
 
@@ -20,7 +18,7 @@ def version(mod_id="cogwork", ver="0.2.0", **over):
     tag = f"{mod_id}-v{ver}"
     v = {
         "version": ver,
-        "channel": model.channel_for(ver, False),
+        "channel": model.channel_for(ver),
         "tag": tag,
         "published": "2026-11-04T02:39:03Z",
         "deps": [{"id": "base"}],
@@ -44,14 +42,12 @@ META = {"name": "Cogwork", "summary": "Gears and tubes.", "authors": ["Zorro909"
 class Fixture:
     """A temporary index repository."""
 
-    def __init__(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        (self.root / "weft.toml").write_text(tomlw.array_of_tables("release", [
+    def __init__(self, test):
+        self.root = scratch_repo(test, [
             {"tag": "v26.11.1", "commit": WEFT, "abi": ABI},
             {"tag": "v26.10.4", "commit": "34fa22b1b6546aa8a8d3d12252bd7a5b01dbb0ec",
              "abi": "5f0569a6bea71b81"},
-        ]))
+        ])
 
     def mod(self, mod_id="cogwork", meta=META):
         d = self.root / "mods" / mod_id
@@ -82,8 +78,7 @@ class Fixture:
 
 class ValidIndexTest(unittest.TestCase):
     def setUp(self):
-        self.f = Fixture()
-        self.addCleanup(self.f.tmp.cleanup)
+        self.f = Fixture(self)
         self.f.add(version(ver="0.2.0"))
         self.f.add(version(ver="0.2.1-rc.1", published="2026-11-04T12:08:06Z"))
         self.f.add(version(ver="0.1.2-experimental.4563878.917596d",
@@ -150,8 +145,7 @@ class ValidIndexTest(unittest.TestCase):
 
 class InvalidIndexTest(unittest.TestCase):
     def setUp(self):
-        self.f = Fixture()
-        self.addCleanup(self.f.tmp.cleanup)
+        self.f = Fixture(self)
 
     def assertError(self, fragment):
         errors = self.f.errors()
@@ -193,6 +187,12 @@ class InvalidIndexTest(unittest.TestCase):
         self.f.add(v)
         self.assertError("asset.sha256")
 
+    def test_sha256_of_the_wrong_type(self):
+        v = version()
+        v["asset"]["sha256"] = ["a"]
+        self.f.add(v)
+        self.assertError("asset.sha256 must be a non-empty string")
+
     def test_uppercase_sha256(self):
         v = version()
         v["asset"]["sha256"] = "A" * 64
@@ -221,15 +221,45 @@ class InvalidIndexTest(unittest.TestCase):
 
     def test_channel_rules(self):
         self.f.add(version(ver="0.2.1-rc.1", channel="release"))
-        self.assertError("a prerelease version can't be in channel release")
+        self.assertError("channel must be prerelease for version 0.2.1-rc.1")
 
     def test_experimental_channel(self):
         self.f.add(version(ver="0.1.2-experimental.4563878.917596d", channel="prerelease"))
-        self.assertError("an experimental build's channel must be experimental")
+        self.assertError("channel must be experimental for version")
 
     def test_unknown_channel(self):
         self.f.add(version(channel="nightly"))
-        self.assertError("channel must be one of")
+        self.assertError("channel must be release for version 0.2.0")
+
+    def test_experimental_channel_needs_experimental_version(self):
+        self.f.add(version(channel="experimental"))
+        self.assertError("channel must be release")
+
+    def test_impossible_dates(self):
+        self.f.add(version(published="2026-02-30T12:00:00Z",
+                           reviewed={"by": "Zorro909", "at": "2026-13-01"}))
+        self.assertError("published '2026-02-30T12:00:00Z' is not a")
+        self.assertError("reviewed.at '2026-13-01' is not a")
+
+    def test_trailing_newline_is_not_a_match(self):
+        self.f.add(version(source={"repo": REPO, "commit": C1 + "\n"}))
+        self.assertError("source.commit")
+
+    def test_reviewed_in_the_future(self):
+        self.f.add(version(reviewed={"by": "Zorro909", "at": "2999-01-01"}))
+        self.assertError("reviewed.at 2999-01-01 is in the future")
+
+    def test_revoked_version_may_name_a_dropped_weft_release(self):
+        v = version(weft={"tag": "v26.9.9", "commit": "9" * 40, "abi": "0" * 16})
+        self.f.add(v)
+        self.assertError("weft.tag v26.9.9 is not in weft.toml")
+        self.f.revoked([{"sha256": v["asset"]["sha256"], "reason": "Weft moved", "at": "2026-11-05"}])
+        self.assertEqual(self.f.errors(), [])
+
+    def test_control_files_are_required(self):
+        self.f.add(version())
+        (self.f.root / "revoked.toml").unlink()
+        self.assertError("revoked.toml")
 
     def test_abi_format(self):
         self.f.add(version(weft={"tag": "v26.11.1", "commit": WEFT, "abi": "F470B1CBB1F9AD91"}))
@@ -338,11 +368,17 @@ class InvalidIndexTest(unittest.TestCase):
 
 class HelpersTest(unittest.TestCase):
     def test_channel_for(self):
-        self.assertEqual(model.channel_for("0.2.0", False), "release")
-        self.assertEqual(model.channel_for("0.2.0", True), "prerelease")
-        self.assertEqual(model.channel_for("0.2.1-rc.1", True), "prerelease")
-        self.assertEqual(model.channel_for("0.1.2-experimental.4563878.917596d", True),
-                         "experimental")
+        self.assertEqual(model.channel_for("0.2.0"), "release")
+        self.assertEqual(model.channel_for("0.2.1-rc.1"), "prerelease")
+        self.assertEqual(model.channel_for("0.1.2-experimental.4563878.917596d"), "experimental")
+
+    def test_experimental_sha_with_leading_zero(self):
+        self.assertTrue(model.SEMVER_RE.fullmatch("0.1.0-experimental.0123456.abcdef1"))
+        # The exception is only for experimental builds.
+        self.assertFalse(model.SEMVER_RE.fullmatch("1.0.0-01"))
+        self.assertFalse(model.SEMVER_RE.fullmatch("1.0.0-rc.01"))
+        self.assertTrue(model.SEMVER_RE.fullmatch("1.0.0-rc.0.x-y"))
+        self.assertEqual(model.channel_for("0.1.0-experimental.0123456.abcdef1"), "experimental")
 
     def test_split_tag(self):
         self.assertEqual(model.split_tag("cogwork-v0.2.0"), ("cogwork", "0.2.0"))
