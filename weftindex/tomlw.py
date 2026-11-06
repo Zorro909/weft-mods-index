@@ -5,8 +5,14 @@ from __future__ import annotations
 
 import json
 
+from .model import MOD_FIELDS, VERSION_FIELDS, Error
+
 
 def string(s: str) -> str:
+    try:
+        s.encode("utf-8")
+    except UnicodeEncodeError:  # a lone surrogate, as JSON's "\ud800" can give
+        raise Error("not valid Unicode") from None
     # A JSON string is a valid TOML basic string, except that TOML also forbids a raw DEL.
     return json.dumps(s, ensure_ascii=False).replace("\x7f", "\\u007f")
 
@@ -22,45 +28,42 @@ def value(v) -> str:
         return "[" + ", ".join(value(x) for x in v) + "]"
     if isinstance(v, dict):
         return "{ " + ", ".join(f"{k} = {value(x)}" for k, x in v.items()) + " }"
-    raise TypeError(f"can't write {type(v).__name__} to TOML")
+    raise Error(f"can't write a {type(v).__name__} to TOML")
+
+
+def _header(header: str) -> list[str]:
+    return [f"# {line}".rstrip() for line in header.splitlines()]
+
+
+def _line(key: str, v, where: str | None = None) -> str:
+    try:
+        return f"{key} = {value(v)}"
+    except Error as e:
+        raise Error(f"{where or key}: {e}") from None
 
 
 def document(top: dict, tables: dict[str, dict | None], header: str = "") -> str:
     """`top` key/values first, then one `[table]` per entry of `tables` (skipping None)."""
-    lines = [f"# {line}".rstrip() for line in header.splitlines()] if header else []
-    if lines:
-        lines.append("")
-    lines += [f"{k} = {value(v)}" for k, v in top.items()]
+    lines = _header(header) + [""] if header else []
+    lines += [_line(k, v) for k, v in top.items()]
     for name, table in tables.items():
-        if table is None:
-            continue
-        lines += ["", f"[{name}]"]
-        lines += [f"{k} = {value(v)}" for k, v in table.items()]
+        if table is not None:
+            lines += ["", f"[{name}]", *(_line(k, v, f"{name}.{k}") for k, v in table.items())]
     return "\n".join(lines) + "\n"
 
 
 def array_of_tables(name: str, entries: list[dict], header: str = "") -> str:
-    lines = [f"# {line}".rstrip() for line in header.splitlines()] if header else []
+    lines = _header(header)
     for entry in entries:
-        if lines:
-            lines.append("")
-        lines.append(f"[[{name}]]")
-        lines += [f"{k} = {value(v)}" for k, v in entry.items()]
+        lines += ([""] if lines else []) + [f"[[{name}]]", *(_line(k, v) for k, v in entry.items())]
     return "\n".join(lines) + "\n"
 
 
 def version_file(v: dict) -> str:
-    top = {k: v[k] for k in ("version", "channel", "tag", "published", "deps", "platforms")}
-    return document(top, {
-        "source": v["source"],
-        "weft": v["weft"],
-        "asset": v["asset"],
-        "provenance": v.get("provenance"),
-        "reviewed": v["reviewed"],
-    })
+    """The plain values first, then one table each, in VERSION_FIELDS order."""
+    return document({k: v[k] for k, keys in VERSION_FIELDS.items() if keys is None},
+                    {k: v.get(k) for k, keys in VERSION_FIELDS.items() if keys is not None})
 
 
 def mod_file(meta: dict) -> str:
-    top = {k: meta[k] for k in ("name", "summary", "authors", "license", "homepage", "icon")
-           if meta.get(k) is not None}
-    return document(top, {})
+    return document({k: meta[k] for k in MOD_FIELDS if meta.get(k) is not None}, {})

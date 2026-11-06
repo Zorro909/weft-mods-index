@@ -1,5 +1,5 @@
 """Loads the reviewed entries from the repository, validates them against the index contract
-(see README.md, "Index format"), and renders `v1/index.json`.
+(Weft Launcher's `docs/mod-manager/INDEX_FORMAT.md`), and renders `v1/index.json`.
 
 Layout of the source of truth:
 
@@ -13,6 +13,8 @@ Everything here is offline: no network access. `check.py` does the online re-ver
 
 from __future__ import annotations
 
+import copy
+import datetime as dt
 import json
 import re
 import tomllib
@@ -26,22 +28,22 @@ WEFT_TAG_RE = re.compile(r"^v[0-9A-Za-z.\-]+$")
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ABI_RE = re.compile(r"^[0-9a-f]{16}$")
-RFC3339_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # RFC 3339, UTC
+DATE_FORMAT = "%Y-%m-%d"
 REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$")
 LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 # SemVer 2.0 (https://semver.org), without build metadata: `+` can't be in a tag URL unescaped.
+# One exception: `-experimental.<weft7>.<mod7>`, whose sha7s may be all digits with a leading zero.
 _PRE_ID = r"(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
 SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-    rf"(?:-({_PRE_ID}(?:\.{_PRE_ID})*))?$"
+    rf"(?:-({_PRE_ID}(?:\.{_PRE_ID})*|experimental\.[0-9a-f]{{7}}\.[0-9a-f]{{7}}))?$"
 )
 # An SPDX license expression made of ids, `AND`, `OR`, `WITH` and parentheses.
 SPDX_RE = re.compile(r"^[A-Za-z0-9.\-+()]+(?:\s+(?:AND|OR|WITH)\s+[A-Za-z0-9.\-+()]+)*$")
 WORKFLOW_RE = re.compile(r"^\.github/workflows/[A-Za-z0-9._-]+\.ya?ml$")
 GIT_REF_RE = re.compile(r"^refs/(?:heads|tags)/[A-Za-z0-9._/\-]+$")
 
-CHANNELS = ("release", "prerelease", "experimental")
 # The order platforms are listed in.
 PLATFORMS = ("windows-x64", "linux-x64", "macos-arm64")
 SUMMARY_MAX = 140
@@ -51,17 +53,37 @@ EXPERIMENTAL_RE = re.compile(r"-experimental\.[0-9a-f]{7}\.[0-9a-f]{7}$")
 # `git describe --tags` of a Weft commit that is not itself a release: `<tag>-<n>-g<sha7>`.
 DESCRIBE_RE = re.compile(r"^(v[0-9A-Za-z.\-]+?)-(\d+)-g([0-9a-f]{7})$")
 
-MOD_KEYS = {"name": True, "summary": True, "authors": True, "license": False,
-            "homepage": False, "icon": False}
-VERSION_KEYS = {"version": True, "channel": True, "tag": True, "published": True,
-                "source": True, "weft": True, "deps": True, "platforms": True, "asset": True,
-                "provenance": False, "reviewed": True}
+# The fields of mod.toml, in index.json order, and whether each is required.
+MOD_FIELDS = {"name": True, "summary": True, "authors": True, "license": False,
+              "homepage": False, "icon": False}
+# The fields of a version file, in index.json order: a table's keys, or None for a plain value.
+# All are required but `provenance`. tomlw writes the plain values first, then the tables.
+VERSION_FIELDS = {
+    "version": None, "channel": None, "tag": None, "published": None,
+    "source": ("repo", "commit"),
+    "weft": ("tag", "commit", "abi"),
+    "deps": None, "platforms": None,
+    "asset": ("name", "url", "size", "sha256"),
+    "provenance": ("kind", "repo", "workflow", "ref", "verified_at"),
+    "reviewed": ("by", "at"),
+}
+OPTIONAL = {"provenance"}
 
 
-class ValidationError(Exception):
+class Error(Exception):
+    """An expected failure: the CLI prints it as one line, without a traceback."""
+
+
+class ValidationError(Error):
     def __init__(self, errors: list[str]):
         super().__init__("\n".join(errors))
         self.errors = errors
+
+
+@dataclass
+class Mod:
+    meta: dict  # mod.toml
+    versions: list[tuple[Path, dict]]  # (path, version file)
 
 
 @dataclass
@@ -70,13 +92,12 @@ class Repo:
     root: Path
     weft: list[dict] = field(default_factory=list)
     revoked: list[dict] = field(default_factory=list)
-    # id -> (mod.toml data, [(path, version data)])
-    mods: dict[str, tuple[dict, list[tuple[Path, dict]]]] = field(default_factory=dict)
+    mods: dict[str, Mod] = field(default_factory=dict)
 
     def versions(self):
-        """Every (mod id, path, version data)."""
-        for mod_id, (_, versions) in self.mods.items():
-            for path, v in versions:
+        """Every (mod id, path, version file)."""
+        for mod_id, mod in self.mods.items():
+            for path, v in mod.versions:
                 yield mod_id, path, v
 
 
@@ -95,14 +116,19 @@ def split_tag(tag: str) -> tuple[str, str] | None:
     return (m.group(1), m.group(2)) if m else None
 
 
-def channel_for(version: str, github_prerelease: bool) -> str:
-    """The channel a release goes into: experimental builds by their tag, then anything GitHub
-    calls a prerelease or that has a SemVer prerelease part."""
+def channel_for(version: str) -> str:
+    """The channel of a version: `experimental` for an experimental build, `prerelease` for any
+    other SemVer prerelease, else `release`. It depends on the version alone, so editing the
+    release on GitHub later can't change it."""
     if EXPERIMENTAL_RE.search(version):
         return "experimental"
-    if github_prerelease or "-" in version:
-        return "prerelease"
-    return "release"
+    return "prerelease" if "-" in version else "release"
+
+
+def weft_base(name: str) -> str:
+    """The release tag a Weft name is based on: `v26.11.1-46-g4563878` -> `v26.11.1`."""
+    m = DESCRIBE_RE.fullmatch(name)
+    return m.group(1) if m else name
 
 
 def semver_key(version: str) -> tuple:
@@ -130,7 +156,7 @@ def _load_toml(path: Path, errors: list[str]) -> dict | None:
     try:
         with path.open("rb") as f:
             return tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as e:
+    except (OSError, ValueError) as e:  # ValueError: bad TOML, or not UTF-8
         errors.append(f"{path}: {e}")
         return None
 
@@ -139,7 +165,7 @@ def load(root: Path) -> tuple[Repo, list[str]]:
     errors: list[str] = []
     repo = Repo(root=root)
     for name, key in (("weft.toml", "release"), ("revoked.toml", "revoked")):
-        data = _load_toml(root / name, errors) if (root / name).exists() else {}
+        data = _load_toml(root / name, errors)
         if data is None:
             continue
         unknown = set(data) - {key}
@@ -150,9 +176,8 @@ def load(root: Path) -> tuple[Repo, list[str]]:
             errors.append(f"{name}: {key} must be an array of tables")
             entries = []
         setattr(repo, "weft" if key == "release" else "revoked", entries)
-    mods_dir = root / "mods"
-    mod_dirs = sorted(p for p in mods_dir.iterdir() if p.is_dir()) if mods_dir.is_dir() else []
-    for mod_dir in mod_dirs:
+    mods_dir = root / "mods"  # absent while the index has no mods
+    for mod_dir in sorted(p for p in mods_dir.glob("*") if p.is_dir()):
         if not (mod_dir / "mod.toml").exists():
             errors.append(f"{mod_dir.relative_to(root)}: no mod.toml")
             continue
@@ -170,7 +195,7 @@ def load(root: Path) -> tuple[Repo, list[str]]:
         stray = [p.name for p in mod_dir.iterdir() if p.name not in ("mod.toml", "versions")]
         if stray:
             errors.append(f"{mod_dir.relative_to(root)}: unexpected files {sorted(stray)}")
-        repo.mods[mod_dir.name] = (meta, versions)
+        repo.mods[mod_dir.name] = Mod(meta, versions)
     return repo, errors
 
 
@@ -205,10 +230,22 @@ class _Checker:
         if not isinstance(value, str) or not value:
             self.err(f"{what} must be a non-empty string")
             return False
-        if pattern is not None and not pattern.match(value):
+        if pattern is not None and not pattern.fullmatch(value):
             self.err(f"{what} {value!r} does not match {pattern.pattern}")
             return False
         return True
+
+    def time(self, value, what: str, fmt: str = TIME_FORMAT) -> bool:
+        """A date or time in `fmt` that exists on the calendar."""
+        if not self.string(value, what):
+            return False
+        try:
+            ok = dt.datetime.strptime(value, fmt).strftime(fmt) == value
+        except ValueError:
+            ok = False
+        if not ok:
+            self.err(f"{what} {value!r} is not a {fmt} date")
+        return ok
 
     def https_url(self, value, what: str, suffix: str | None = None) -> bool:
         if not self.string(value, what):
@@ -258,15 +295,16 @@ def validate(repo: Repo) -> list[str]:
             revoked_shas.add(rev["sha256"])
         if c.string(rev["reason"], "reason") and not one_line(rev["reason"]):
             c.err("reason must be one line")
-        c.string(rev["at"], "at", DATE_RE)
+        c.time(rev["at"], "at", DATE_FORMAT)
 
-    seen_sha: dict[str, str] = {}
-    abi_by_commit = {commit: (abi, "weft.toml") for commit, abi in weft_commits.items()}
-    for mod_id, (meta, versions) in repo.mods.items():
+    seen = _Seen(weft_by_tag, {commit: (abi, "weft.toml") for commit, abi in weft_commits.items()},
+                 revoked_shas)
+    for mod_id, mod in repo.mods.items():
+        meta, versions = mod.meta, mod.versions
         c = _Checker(f"mods/{mod_id}/mod.toml", errors)
         if not ID_RE.match(mod_id):
             c.err(f"mod id {mod_id!r} (the folder name) does not match {ID_RE.pattern}")
-        if c.keys(meta, MOD_KEYS):
+        if c.keys(meta, MOD_FIELDS):
             c.string(meta["name"], "name")
             if c.string(meta["summary"], "summary"):
                 s = meta["summary"]
@@ -286,59 +324,68 @@ def validate(repo: Repo) -> list[str]:
         if not versions:
             c.err("no versions")
 
-        seen_versions: dict[str, Path] = {}
-        seen_tags: dict[str, Path] = {}
+        seen.versions, seen.tags = {}, {}
         for path, v in versions:
             rel_path = path.relative_to(repo.root)
             c = _Checker(str(rel_path), errors)
-            if not c.keys(v, VERSION_KEYS):
-                continue
-            _validate_version(c, mod_id, rel_path, v, seen_versions, seen_tags, seen_sha,
-                              weft_by_tag, abi_by_commit)
+            if c.keys(v, {k: k not in OPTIONAL for k in VERSION_FIELDS}):
+                _validate_version(c, mod_id, rel_path, v, seen)
     return errors
 
 
-def _validate_version(c, mod_id, rel_path, v, seen_versions, seen_tags, seen_sha, weft_by_tag,
-                      abi_by_commit):
+@dataclass
+class _Seen:
+    """What validation has seen so far, to find duplicates and contradictions."""
+    weft_by_tag: dict[str, dict]  # weft.toml
+    abi_by_commit: dict[str, tuple[str, str]]  # Weft commit -> (ABI, where it was first given)
+    revoked: set[str]
+    sha: dict[str, str] = field(default_factory=dict)  # sha256 -> version file
+    versions: dict[str, Path] = field(default_factory=dict)  # of the current mod
+    tags: dict[str, Path] = field(default_factory=dict)  # of the current mod
+
+
+def _table(c: _Checker, v: dict, name: str) -> bool:
+    """Whether the table `name` of a version file has exactly its keys from VERSION_FIELDS."""
+    return c.keys(v[name], dict.fromkeys(VERSION_FIELDS[name], True), name)
+
+
+def _validate_version(c: _Checker, mod_id: str, rel_path: Path, v: dict, seen: _Seen):
     version, tag = v["version"], v["tag"]
     if c.string(version, "version", SEMVER_RE):
         if rel_path.stem != version:
             c.err(f"file name must be {version}.toml")
-        if version in seen_versions:
-            c.err(f"duplicate version {version} (also in {seen_versions[version]})")
-        seen_versions[version] = rel_path
+        if version in seen.versions:
+            c.err(f"duplicate version {version} (also in {seen.versions[version]})")
+        seen.versions[version] = rel_path
     if c.string(tag, "tag"):
         if tag_version(mod_id, tag) != version:
             c.err(f"tag {tag!r} must be {mod_id}-v{version}")
-        if tag in seen_tags:
+        if tag in seen.tags:
             c.err(f"duplicate tag {tag}")
-        seen_tags[tag] = rel_path
+        seen.tags[tag] = rel_path
     if c.string(v["channel"], "channel") and isinstance(version, str):
-        experimental = bool(EXPERIMENTAL_RE.search(version))
-        if v["channel"] not in CHANNELS:
-            c.err(f"channel must be one of {CHANNELS}")
-        elif experimental and v["channel"] != "experimental":
-            c.err("an experimental build's channel must be experimental")
-        elif not experimental and v["channel"] == "experimental":
-            c.err("channel experimental needs an -experimental.<weft7>.<mod7> version")
-        elif "-" in version and v["channel"] == "release":
-            c.err("a prerelease version can't be in channel release")
-    c.string(v["published"], "published", RFC3339_UTC_RE)
+        if v["channel"] != channel_for(version):
+            c.err(f"channel must be {channel_for(version)} for version {version}")
+    c.time(v["published"], "published")
 
     source = v["source"]
     src_repo = None
-    if c.keys(source, {"repo": True, "commit": True}, "source"):
+    if _table(c, v, "source"):
         if c.string(source["repo"], "source.repo", REPO_RE):
             src_repo = source["repo"]
         c.string(source["commit"], "source.commit", SHA1_RE)
 
     weft = v["weft"]
-    if c.keys(weft, {"tag": True, "commit": True, "abi": True}, "weft"):
+    if _table(c, v, "weft"):
         ok = c.string(weft["tag"], "weft.tag", WEFT_TAG_RE)
         ok &= c.string(weft["commit"], "weft.commit", SHA1_RE)
         ok &= c.string(weft["abi"], "weft.abi", ABI_RE)
-        if ok:
-            _check_weft(c, weft, weft_by_tag, abi_by_commit, str(rel_path))
+        # A revoked build may name a Weft release that weft.toml no longer lists (MAINTAINING.md,
+        # "When the weekly publish fails").
+        sha = v["asset"].get("sha256") if isinstance(v["asset"], dict) else None
+        revoked = isinstance(sha, str) and sha in seen.revoked
+        if ok and not revoked:
+            _check_weft(c, weft, seen.weft_by_tag, seen.abi_by_commit, str(rel_path))
 
     deps = v["deps"]
     if not isinstance(deps, list):
@@ -362,7 +409,7 @@ def _validate_version(c, mod_id, rel_path, v, seen_versions, seen_tags, seen_sha
         c.err(f"platforms must be unique and in the order {list(PLATFORMS)}")
 
     asset = v["asset"]
-    if c.keys(asset, {"name": True, "url": True, "size": True, "sha256": True}, "asset"):
+    if _table(c, v, "asset"):
         if asset["name"] != f"{mod_id}.zip":
             c.err(f"asset.name must be {mod_id}.zip")
         if c.string(asset["url"], "asset.url") and src_repo and isinstance(tag, str):
@@ -377,26 +424,27 @@ def _validate_version(c, mod_id, rel_path, v, seen_versions, seen_tags, seen_sha
             c.err("asset.size must be a positive integer")
         if c.string(asset["sha256"], "asset.sha256", SHA256_RE):
             sha = asset["sha256"]
-            if sha in seen_sha:
-                c.err(f"asset.sha256 is also pinned by {seen_sha[sha]}")
-            seen_sha[sha] = str(rel_path)
+            if sha in seen.sha:
+                c.err(f"asset.sha256 is also pinned by {seen.sha[sha]}")
+            seen.sha[sha] = str(rel_path)
 
     if "provenance" in v:
         p = v["provenance"]
-        spec = {"kind": True, "repo": True, "workflow": True, "ref": True, "verified_at": True}
-        if c.keys(p, spec, "provenance"):
+        if _table(c, v, "provenance"):
             if p["kind"] != "github-attestation":
                 c.err("provenance.kind must be github-attestation")
             if p["repo"] != src_repo:
                 c.err("provenance.repo must equal source.repo")
             c.string(p["workflow"], "provenance.workflow", WORKFLOW_RE)
             c.string(p["ref"], "provenance.ref", GIT_REF_RE)
-            c.string(p["verified_at"], "provenance.verified_at", RFC3339_UTC_RE)
+            c.time(p["verified_at"], "provenance.verified_at")
 
     r = v["reviewed"]
-    if c.keys(r, {"by": True, "at": True}, "reviewed"):
+    if _table(c, v, "reviewed"):
         c.string(r["by"], "reviewed.by", LOGIN_RE)
-        c.string(r["at"], "reviewed.at", DATE_RE)
+        tomorrow = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)).strftime(DATE_FORMAT)
+        if c.time(r["at"], "reviewed.at", DATE_FORMAT) and r["at"] > tomorrow:
+            c.err(f"reviewed.at {r['at']} is in the future")
 
 
 def _check_weft(c, weft: dict, weft_by_tag: dict, abi_by_commit: dict, where: str):
@@ -406,15 +454,13 @@ def _check_weft(c, weft: dict, weft_by_tag: dict, abi_by_commit: dict, where: st
         if known["commit"] != commit:
             c.err(f"weft.commit differs from weft.toml's {tag} ({known['commit']})")
     else:
-        m = DESCRIBE_RE.match(tag)
+        m = DESCRIBE_RE.fullmatch(tag)
         if not m:
             c.err(f"weft.tag {tag} is not in weft.toml and not of the form <tag>-<n>-g<sha7>")
         elif m.group(1) not in weft_by_tag:
             c.err(f"weft.tag {tag} is based on {m.group(1)}, which weft.toml doesn't list")
         elif m.group(3) != commit[:7]:
             c.err(f"weft.tag {tag} must end in -g{commit[:7]}")
-        elif commit in {r["commit"] for r in weft_by_tag.values()}:
-            c.err(f"weft.commit {commit[:7]} is a release; weft.tag must be its tag")
     prev = abi_by_commit.get(commit)
     if prev is not None and prev[0] != abi:
         c.err(f"weft.abi {abi} differs from {prev[0]} for the same commit in {prev[1]}")
@@ -426,25 +472,11 @@ def _check_weft(c, weft: dict, weft_by_tag: dict, abi_by_commit: dict, where: st
 
 
 def _version_json(v: dict) -> dict:
-    p = v.get("provenance")
-    return {
-        "version": v["version"],
-        "channel": v["channel"],
-        "tag": v["tag"],
-        "published": v["published"],
-        "source": {"repo": v["source"]["repo"], "commit": v["source"]["commit"]},
-        "weft": {"tag": v["weft"]["tag"], "commit": v["weft"]["commit"],
-                 "abi": v["weft"]["abi"]},
-        "deps": [{"id": d["id"]} for d in v["deps"]],
-        "platforms": list(v["platforms"]),
-        "asset": {"name": v["asset"]["name"], "url": v["asset"]["url"],
-                  "size": v["asset"]["size"], "sha256": v["asset"]["sha256"]},
-        "provenance": None if p is None else {
-            "kind": p["kind"], "repo": p["repo"], "workflow": p["workflow"], "ref": p["ref"],
-            "verified_at": p["verified_at"],
-        },
-        "reviewed": {"by": v["reviewed"]["by"], "at": v["reviewed"]["at"]},
-    }
+    """A validated version file as index.json has it: every field and table key in
+    VERSION_FIELDS order, `null` for an absent table."""
+    return {k: None if v.get(k) is None
+            else {key: v[k][key] for key in keys} if keys else copy.deepcopy(v[k])
+            for k, keys in VERSION_FIELDS.items()}
 
 
 def version_order_key(v: dict) -> tuple:
@@ -455,16 +487,11 @@ def version_order_key(v: dict) -> tuple:
 def render(repo: Repo, generated: str) -> dict:
     mods = []
     for mod_id in sorted(repo.mods):
-        meta, versions = repo.mods[mod_id]
-        vs = sorted((v for _, v in versions), key=version_order_key, reverse=True)
+        mod = repo.mods[mod_id]
+        vs = sorted((v for _, v in mod.versions), key=version_order_key, reverse=True)
         mods.append({
             "id": mod_id,
-            "name": meta["name"],
-            "summary": meta["summary"],
-            "authors": list(meta["authors"]),
-            "license": meta.get("license"),
-            "homepage": meta.get("homepage"),
-            "icon": meta.get("icon"),
+            **{k: copy.deepcopy(mod.meta.get(k)) for k in MOD_FIELDS},
             "versions": [_version_json(v) for v in vs],
         })
     weft = sorted(repo.weft, key=lambda r: weft_tag_key(r["tag"]), reverse=True)
@@ -493,6 +520,8 @@ def load_valid(root: Path) -> Repo:
 
 
 def build(root: Path, generated: str) -> bytes:
-    if not RFC3339_UTC_RE.match(generated):
-        raise ValidationError([f"generated {generated!r} must be RFC 3339 UTC (…Z)"])
+    errors: list[str] = []
+    _Checker("--generated", errors).time(generated, "generated")
+    if errors:
+        raise ValidationError(errors)
     return dumps(render(load_valid(root), generated))

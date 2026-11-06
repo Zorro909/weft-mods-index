@@ -1,0 +1,8 @@
+# Proposes updates to the commit-pinned actions in .github/workflows/. Review them like any other
+# change: the Publish workflow runs them next to the signing key.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

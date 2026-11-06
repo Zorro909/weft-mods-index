@@ -1,11 +1,14 @@
-# On every push to main, and weekly: test, validate, re-verify every pinned asset, build `v1/index.json`,
+# On every push to main, and weekly: re-verify every pinned release, then build `v1/index.json`,
 # sign it with minisign, and deploy it to GitHub Pages:
 #   https://zorro909.github.io/weft-mods-index/v1/index.json
 #   https://zorro909.github.io/weft-mods-index/v1/index.json.minisig
-# The signing key is only in the `index-signing` environment, which only main can deploy to.
+# `verify` downloads and parses untrusted release assets, so it runs without the signing key.
+# `sign` holds the key (the `index-signing` environment, which only main can deploy to) and runs
+# only offline code: it rebuilds the same bytes from the same commit, signs and checks them.
 # The weekly run re-signs unchanged content with a new timestamp: the launcher treats an index
 # signed more than 30 days ago as stale, so an attacker can't keep serving an old, valid copy
 # (one that predates a revocation) without the launcher saying so.
+# Actions are pinned by commit; Dependabot (.github/dependabot.yml) proposes updates.
 name: Publish
 
 on:
@@ -23,21 +26,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
-    environment: index-signing
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Unit tests
         run: python3 -m unittest discover -s tests -t . -v
 
-      - name: Re-verify every pinned asset
+      - name: Re-verify every pinned release
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -m weftindex check
 
-      # `generated` is the commit's time, so a rerun gives the same bytes.
+  sign:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: index-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # `generated` is the commit's time, so the bytes depend only on the commit `verify` checked.
       - name: Build
         run: python3 -m weftindex build --out site
 
@@ -56,14 +65,14 @@ jobs:
             -t "timestamp:$(date +%s) file:index.json commit:$GITHUB_SHA"
           minisign -Vm site/v1/index.json -p keys/index.pub
 
-      - uses: actions/configure-pages@v6
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
 
   deploy:
-    needs: build
+    needs: sign
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -73,4 +82,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}v1/index.json
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
