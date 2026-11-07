@@ -44,6 +44,10 @@ class InspectTest(unittest.TestCase):
         self.gh.publish(mod_json={"attestation": {"for": "someone else's zip"}})
         self.assertFails("gh attestation verify failed")
 
+    def test_other_files_are_allowed(self):
+        self.gh.publish(mod_zip(extra={"README.md": b"", "data/x.bin": b"", "other.dll": b""}))
+        self.assertEqual(self.inspect().manifest["id"], "cogwork")
+
     def test_attestation_signer(self):
         self.gh.publish()
         for result in (cert(repo="someone/else"), cert(issuer="https://evil"), cert(commit="x")):
@@ -53,9 +57,9 @@ class InspectTest(unittest.TestCase):
 
     def test_zip_contents(self):
         cases = {
-            "may not hold 'readme.txt'": mod_zip(extra={"readme.txt": b""}),
             "may not hold 'assets/../x'": mod_zip(extra={"assets/../x": b""}),
-            "may not hold 'other.dll'": mod_zip(extra={"other.dll": b""}),
+            "may not hold '/etc/x'": mod_zip(extra={"/etc/x": b""}),
+            "may not hold 'a\\\\b'": mod_zip(extra={"a\\b": b""}),
             "no library": zip_of({"weft-mod.toml": b"", "assets/a": b""}),
             "has no weft-mod.toml": zip_of({"cogwork.dll": b""}),
             "weft-mod.toml:": zip_of({"weft-mod.toml": b"id = ", "cogwork.dll": b""}),

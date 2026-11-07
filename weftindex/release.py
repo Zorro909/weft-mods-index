@@ -2,7 +2,8 @@
 `add-release`, which writes the files of new releases.
 
 A release of `<repo>` at `<tag>` must have:
-  - `<id>.zip`: `weft-mod.toml`, `<id>.dll` / `lib<id>.so` / `lib<id>.dylib`, `assets/...`;
+  - `<id>.zip`: `weft-mod.toml` and `<id>.dll` / `lib<id>.so` / `lib<id>.dylib` at the top,
+    and whatever else the mod needs, such as `assets/...`;
   - `<id>.mod.json`: `{"attestation": <Sigstore bundle>}`, a build provenance attestation of
     the zip, signed by a GitHub Actions workflow of `<repo>`.
 """
@@ -44,19 +45,19 @@ class Build:
 
 
 def read_zip(data: bytes, mod_id: str) -> dict:
-    """The `weft-mod.toml` of a mod zip, after checking that the zip holds only what it may."""
-    allowed = {MANIFEST, f"{mod_id}.dll", f"lib{mod_id}.so", f"lib{mod_id}.dylib"}
+    """The `weft-mod.toml` of a mod zip, after checking that it has one and a library, and that
+    no path could land outside the mod's folder when extracted. Any other file is allowed."""
+    libraries = {f"{mod_id}.dll", f"lib{mod_id}.so", f"lib{mod_id}.dylib"}
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             names = z.namelist()
             for name in names:
                 parts = name.removesuffix("/").split("/")
-                if "\\" in name or any(p in ("", ".", "..") for p in parts) \
-                        or not (name in allowed or parts[0] == "assets"):
+                if "\\" in name or any(p in ("", ".", "..") for p in parts):
                     raise ReleaseError(f"{mod_id}.zip may not hold {name!r}")
             if len(set(names)) != len(names):
                 raise ReleaseError(f"{mod_id}.zip holds a file twice")
-            if not (allowed - {MANIFEST}) & set(names):
+            if not libraries & set(names):
                 raise ReleaseError(f"{mod_id}.zip holds no library named after {mod_id}")
             if MANIFEST not in names:
                 raise ReleaseError(f"{mod_id}.zip has no {MANIFEST}")

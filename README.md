@@ -18,9 +18,7 @@ The [weft-mod-action](https://github.com/Zorro909/weft-mod-action) actions build
 - **Asset `<id>.zip`.** It holds:
   - `weft-mod.toml` (see below);
   - `<id>.dll`, `lib<id>.so` and/or `lib<id>.dylib` at the top level;
-  - `assets/...`.
-
-  Nothing else is allowed.
+  - `assets/...`, and anything else the mod needs. CI only refuses paths that could land outside the mod's folder (`..`, absolute paths, backslashes).
 - **Asset `<id>.mod.json`:** `{"attestation": <bundle>}`. The bundle is the Sigstore bundle that [`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance) writes for `<id>.zip`, in a workflow of the same repository.
 
 `weft-mod.toml`:
