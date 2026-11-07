@@ -1,5 +1,5 @@
 # Weft releases and the mod ABI hash of each: FNV-1a-64 of crates/abi/src/lib.rs at the commit.
-# Becomes the index's `weft[]`. `python3 -m weftindex sync-weft` adds new releases.
+# Becomes the index's `weft` map. `python3 -m weftindex sync-weft` adds new releases.
 
 [[release]]
 tag = "v26.11.2"

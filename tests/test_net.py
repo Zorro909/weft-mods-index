@@ -6,6 +6,7 @@ import subprocess
 import unittest
 import urllib.error
 import http.client
+from pathlib import Path
 from unittest import mock
 
 from weftindex import model, net
@@ -114,24 +115,28 @@ class GitHubTest(unittest.TestCase):
         self.assertIsNone(self.gh.raw("x/y", "c" * 40, "src/lib.rs"))  # cached
         self.assertEqual(len(self.requests), 1)
 
-    def test_verify_attestation_runs_gh(self):
+    def test_verify_attestation_runs_gh_with_the_bundle(self):
         calls = []
 
         def run(cmd, **kw):
-            calls.append(cmd)
+            if "--bundle" in cmd:
+                calls.append((cmd, json.loads(Path(cmd[cmd.index("--bundle") + 1]).read_text())))
             out = json.dumps([{"verificationResult": {}}]) if "--repo" in cmd else ""
             return subprocess.CompletedProcess(cmd, 0, out, "")
 
         with mock.patch("shutil.which", return_value="/usr/bin/gh"), \
                 mock.patch("subprocess.run", run):
-            self.assertEqual(self.gh.verify_attestation(b"zip", "x/y"), [{"verificationResult": {}}])
-        self.assertEqual(calls[1][:3], ["gh", "attestation", "verify"])
-        self.assertEqual(calls[1][4:], ["--repo", "x/y", "--format", "json"])
+            self.assertEqual(self.gh.verify_attestation(b"zip", {"b": 1}, "x/y"),
+                             [{"verificationResult": {}}])
+        [(cmd, bundle)] = calls
+        self.assertEqual(cmd[:3], ["gh", "attestation", "verify"])
+        self.assertEqual(cmd[6:], ["--repo", "x/y", "--format", "json"])
+        self.assertEqual(bundle, {"b": 1})
 
     def test_verify_attestation_needs_gh(self):
         with mock.patch("shutil.which", return_value=None):
             with self.assertRaisesRegex(model.Error, "gh` 2.49"):
-                self.gh.verify_attestation(b"zip", "x/y")
+                self.gh.verify_attestation(b"zip", {}, "x/y")
 
 
 if __name__ == "__main__":

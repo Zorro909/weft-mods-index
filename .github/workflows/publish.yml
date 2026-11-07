@@ -1,21 +1,14 @@
-# On every push to main, and weekly: re-verify every pinned release, then build `v1/index.json`,
-# sign it with minisign, and deploy it to GitHub Pages:
-#   https://zorro909.github.io/weft-mods-index/v1/index.json
-#   https://zorro909.github.io/weft-mods-index/v1/index.json.minisig
-# `verify` downloads and parses untrusted release assets, so it runs without the signing key.
-# `sign` holds the key (the `index-signing` environment, which only main can deploy to) and runs
-# only offline code: it rebuilds the same bytes from the same commit, signs and checks them.
-# The weekly run re-signs unchanged content with a new timestamp: the launcher treats an index
-# signed more than 30 days ago as stale, so an attacker can't keep serving an old, valid copy
-# (one that predates a revocation) without the launcher saying so.
+# On every push to main: verify every release, build `v2/index.json`, and deploy it to Pages:
+#   https://weft-rust.github.io/weft-mods-index/v2/index.json
+# The index is not signed. The launcher trusts each build because the index pins its sha256 (a
+# reviewed PR put it there) and because the release's attestation proves which workflow of the
+# mod's repo built it. Pages serves only what the last successful run built.
 # Actions are pinned by commit; Dependabot (.github/dependabot.yml) proposes updates.
 name: Publish
 
 on:
   push:
     branches: [main]
-  schedule:
-    - cron: "17 4 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -26,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,36 +27,11 @@ jobs:
       - name: Unit tests
         run: python3 -m unittest discover -s tests -t . -v
 
-      - name: Re-verify every pinned release
+      - name: Verify every release and build the index
+        shell: bash  # with pipefail: a failed build fails the step despite tee
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 -m weftindex check
-
-  sign:
-    needs: verify
-    runs-on: ubuntu-latest
-    environment: index-signing
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # `generated` is the commit's time, so the bytes depend only on the commit `verify` checked.
-      - name: Build
-        run: python3 -m weftindex build --out site
-
-      - name: Install minisign
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign
-
-      - name: Sign
-        env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
-        run: |
-          key=$(mktemp)
-          trap 'rm -f "$key"' EXIT
-          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
-          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key" -m site/v1/index.json \
-            -t "timestamp:$(date +%s) file:index.json commit:$GITHUB_SHA"
-          minisign -Vm site/v1/index.json -p keys/index.pub
+        run: python3 -m weftindex build --out site | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
@@ -72,14 +40,14 @@ jobs:
           path: site
 
   deploy:
-    needs: sign
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       pages: write
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}v1/index.json
+      url: ${{ steps.deployment.outputs.page_url }}v2/index.json
     steps:
       - id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

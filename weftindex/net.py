@@ -106,17 +106,19 @@ class GitHub:
                 self._raw_cache[url] = None
         return self._raw_cache[url]
 
-    def verify_attestation(self, data: bytes, repo: str) -> list[dict]:
-        """`gh attestation verify --repo <repo>` of the bytes: the JSON results, or an Error if no
-        attestation of `repo` verifies."""
+    def verify_attestation(self, data: bytes, bundle: dict, repo: str) -> list[dict]:
+        """`gh attestation verify --bundle <bundle> --repo <repo>` of the bytes: the JSON results,
+        or an Error if the bundle doesn't verify for them."""
         if not shutil.which("gh") or subprocess.run(["gh", "attestation", "verify", "--help"],
                                                     capture_output=True).returncode != 0:
             raise Error("verifying an attestation needs `gh` 2.49 or newer")
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "asset.zip"
+            path, bundle_path = Path(tmp) / "mod.zip", Path(tmp) / "bundle.json"
             path.write_bytes(data)
-            r = subprocess.run(["gh", "attestation", "verify", str(path), "--repo", repo,
-                                "--format", "json"], capture_output=True, text=True)
+            bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+            r = subprocess.run(["gh", "attestation", "verify", str(path), "--bundle",
+                                str(bundle_path), "--repo", repo, "--format", "json"],
+                               capture_output=True, text=True)
         if r.returncode != 0:
             raise Error(f"gh attestation verify failed:\n{r.stderr.strip()}")
         try:
