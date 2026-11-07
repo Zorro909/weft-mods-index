@@ -1,7 +1,7 @@
 # Revoked builds, by the sha256 of their zip. The launcher never installs a revoked build and
-# turns it off where it is installed. Add an entry with a PR; keep the version file in mods/.
+# turns it off where it is installed. Add an entry with a PR; keep the version file in mods/, so
+# the build stays out of the index. `reason` is optional, one line the player sees.
 #
 # [[revoked]]
 # sha256 = "<64 lowercase hex>"
-# reason = "One line the player sees"
-# at = "YYYY-MM-DD"
+# reason = "Deletes saves"

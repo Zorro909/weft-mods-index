@@ -1,10 +1,8 @@
 # On every pull request:
 #   - `test`: the unit tests and the offline validation, on the oldest and newest Python we support.
-#   - `verify`: an online re-check of the version files the PR adds or changes (`check --since`:
-#     re-download, re-hash, ABI, provenance). It runs the base branch's tooling, not the PR's, so
-#     a PR can't pass by changing the checks; a PR that changes both the tooling and version files
-#     has to be split.
-# The weekly re-check of every version runs in publish.yml, before it re-signs.
+#   - `verify`: builds the index as Publish would: downloads every release, verifies its
+#     attestation and reads its weft-mod.toml. The job summary lists, for each build, the commit
+#     and workflow that built it, for the reviewer.
 name: Check
 
 on:
@@ -36,19 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
 
-      - name: Re-verify the changed versions, with the base branch's tooling
+      - name: Verify every release and build the index
+        shell: bash  # with pipefail: a failed build fails the step despite tee
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE: ${{ github.base_ref }}
-        run: |
-          if [ -z "$BASE" ]; then
-            python3 -m weftindex check
-            exit
-          fi
-          git worktree add -q "$RUNNER_TEMP/base" "origin/$BASE"
-          cd "$RUNNER_TEMP/base"
-          python3 -m weftindex --root "$GITHUB_WORKSPACE" validate
-          python3 -m weftindex --root "$GITHUB_WORKSPACE" check --since "origin/$BASE"
+        run: python3 -m weftindex build --out dist | tee -a "$GITHUB_STEP_SUMMARY"

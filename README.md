@@ -1,14 +1,10 @@
 # weft-mods-index
 
-The curated, signed index of reviewed [Weft](https://github.com/Weft-Rust/Weft) mods. Weft Launcher reads it to offer mods with the **Reviewed** badge.
+The curated index of reviewed [Weft](https://github.com/Weft-Rust/Weft) mods. Weft Launcher reads it to offer mods with the **Reviewed** badge:
 
-| File | URL |
-|---|---|
-| Index | <https://zorro909.github.io/weft-mods-index/v1/index.json> |
-| Signature | <https://zorro909.github.io/weft-mods-index/v1/index.json.minisig> |
-| Public key | [`keys/index.pub`](keys/index.pub), embedded in the launcher |
+**<https://weft-rust.github.io/weft-mods-index/v2/index.json>**
 
-Each entry pins one release of a mod: the sha256 of its zip, the commit it was built from, the Weft commit and mod ABI it was built against, and who reviewed it. When a pull request is merged, CI builds `index.json` from this repository, signs it, and publishes it.
+Each entry pins one release of a mod by the sha256 of its zip. A pull request adds the entry and a reviewer reads the mod's source before merging. On merge, CI downloads every release, verifies its build provenance attestation, reads its `weft-mod.toml`, and publishes `index.json`. Nobody writes `index.json` by hand.
 
 This page is for modders. Reviewers and maintainers: see [MAINTAINING.md](MAINTAINING.md).
 
@@ -16,145 +12,114 @@ This page is for modders. Reviewers and maintainers: see [MAINTAINING.md](MAINTA
 
 ### 1. Make the release
 
-The release must be on GitHub, in a public repository. The [weft-mod-action](https://github.com/Zorro909/weft-mod-action) actions build and release your mods in this form, and can open the pull request of step 2 for you. Without them, a release needs:
+The [weft-mod-action](https://github.com/Zorro909/weft-mod-action) actions build and release your mods in the right form. A release must be on GitHub, in a public repository, and have:
 
-- **Tag:** `<id>-v<version>`, where `<id>` matches `[a-z0-9_]+` and `<version>` is SemVer, for example `cogwork-v0.2.0` or `cogwork-v0.3.0-rc.1`.
-- **Asset `<id>.zip`:** it holds `<id>.dll`, `lib<id>.so` and/or `lib<id>.dylib` at the top level, and `assets/`.
-- **Asset `<id>.mod.json`:** which Weft the zip was built against, its deps, and the mod's name and summary. See [below](#idmodjson).
-- **Optional:** an [`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance) attestation for `<id>.zip`, made by the workflow run that built it. It lets the reviewer trust the build, not just the source.
+- **Tag:** `<id>-v<version>`, where `<id>` matches `[a-z0-9_]{1,64}` and `<version>` is SemVer, for example `cogwork-v0.2.0` or `cogwork-v0.3.0-rc.1`.
+- **Asset `<id>.zip`.** It holds:
+  - `weft-mod.toml` (see below);
+  - `<id>.dll`, `lib<id>.so` and/or `lib<id>.dylib` at the top level;
+  - `assets/...`.
+
+  Nothing else is allowed.
+- **Asset `<id>.mod.json`:** `{"attestation": <bundle>}`. The bundle is the Sigstore bundle that [`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance) writes for `<id>.zip`, in a workflow of the same repository.
+
+`weft-mod.toml`:
+
+```toml
+id = "cogwork"
+name = "Cogwork"
+version = "0.2.0"          # the tag's version
+abi = "f470b1cbb1f9ad91"   # FNV-1a-64 of Weft's crates/abi/src/lib.rs that the mod was built against
+deps = ["base"]            # mod ids; each must be "base" or a mod in the index
+```
 
 ### 2. Open the pull request
 
-With weft-mod-action, run its [`index-pr` workflow](https://github.com/Zorro909/weft-mod-action#proposing-to-the-index) from your repository's Actions tab instead: it does all of this step for you.
+With weft-mod-action, run its [`index-pr` workflow](https://github.com/Zorro909/weft-mod-action#proposing-to-the-index). It does this step for you.
 
-By hand, you need Python 3.11 or newer and the [GitHub CLI](https://cli.github.com/) (`gh`), logged in with `gh auth login`. If your release has an attestation, you need `gh` 2.49 or newer.
-
-```sh
-gh repo fork Zorro909/weft-mods-index --clone && cd weft-mods-index    # the first time
-git fetch upstream && git switch -c add-cogwork-0.2.0 upstream/main     # every time
-
-python3 -m weftindex add-release <owner>/<repo> <id>-v<version>    # several tags at once are fine
-```
-
-Run it from the root of your clone. Branching from `upstream/main` starts from what the index has now, not from your fork's old copy. A clone made some other way may lack the `upstream` remote: `git remote add upstream https://github.com/Zorro909/weft-mods-index.git`.
-
-`add-release` reads the release, downloads and hashes the zip, and checks everything it finds against everything else. Then it writes:
-
-- `mods/<id>/versions/<version>.toml`, one per tag;
-- `mods/<id>/mod.toml`, the name, summary, authors and icon, for a mod that is new to the index. Pass `--update-meta` to rewrite it from a newer release;
-- `weft.toml`, if your mod was built against a Weft release the index doesn't list yet.
-
-It writes these only if every tag succeeds and the repository validates with them. At the end it prints the commands that commit, push and open the pull request, with a title and a description (`dist/pr.md`) that link your releases and the source changes for the reviewer:
+By hand, you need Python 3.11 or newer and [`gh`](https://cli.github.com/) 2.49 or newer, logged in:
 
 ```sh
-git add mods weft.toml && git commit -m 'Add cogwork 0.2.0'
-git push -u origin HEAD
-gh pr create --title 'Add cogwork 0.2.0' --body-file dist/pr.md
+gh repo fork Weft-Rust/weft-mods-index --clone && cd weft-mods-index   # the first time
+git fetch upstream && git switch -c add-cogwork-0.2.0 upstream/main    # every time
+
+python3 -m weftindex add-release <owner>/<repo> <id>-v<version> [more tags] [--summary "..."]
 ```
 
-Don't edit the version files. You may reword `mod.toml`'s `summary` (one line, 140 characters at most) if the generated one reads badly. `[reviewed]` holds your login for now; the reviewer replaces it with theirs when they approve.
+`add-release` downloads each release, verifies it as CI will, and writes its version file. Then it prints the commands that commit, push and open the PR. Its description, in `dist/pr.md`, links the source of each build for the reviewer. A mod that is new to the index also needs `--summary`.
 
 ### 3. Wait for Check and a review
 
-The `Check` workflow runs on the PR. It validates every file, and re-downloads and re-verifies each version file the PR adds. A reviewer reads the mod's source at the pinned commit (see [MAINTAINING.md](MAINTAINING.md#review)), and merging publishes the index.
+The `Check` workflow verifies every release on the PR. A reviewer reads your mod's source at the commit each build was made from. Merging publishes the index.
 
-### If something fails
+## The files
 
-Each error names the file and the field. The usual causes:
+```
+mods/<id>/mod.toml                   the mod's summary, and optionally a name
+mods/<id>/versions/<version>.toml    one release: repo, tag, sha256
+weft.toml                            Weft releases and the mod ABI of each
+revoked.toml                         revoked builds
+weftindex/                           the tooling (Python 3.11+, standard library only)
+tests/                               python3 -m unittest discover -s tests -t .
+```
 
-| Error | Fix |
-|---|---|
-| `release <tag> has no <id>.mod.json` | Upload one to the release (assets can be added to a published release). Then run `add-release` again. |
-| `downloaded sha256 …, GitHub's digest is …` or `… is pinned as …, but the release now gives …` | The asset or tag changed after the version file was written. Re-upload the original, or make a new release and add that instead. |
-| `<id>.mod.json: <field> is …, not …` | `<id>.mod.json` disagrees with what the tool found in the release, in the field it names. Regenerate it in the release workflow. |
-| `weft.tag '…' doesn't name Weft …` | `weft.tag` must be the release tag at `weft.commit`, or its `git describe --tags` name, such as `v26.11.1-46-g4563878`. |
-| `verifying an attestation needs gh 2.49 or newer` | Update `gh`. |
-| `mods/<id>/versions/<version>.toml exists` | That version is already in the index. `--force` overwrites it, but only use it when the release itself was fixed. |
-| `HTTP 401` / `HTTP 403` | Log in with `gh auth login`, or set `GH_TOKEN`. |
+`mods/<id>/mod.toml`:
 
-## `<id>.mod.json`
+```toml
+summary = "Gears, item tubes and engines."   # one line, at most 140 characters
+# name = "Cogwork"                           # optional; default: the newest build's weft-mod.toml
+```
 
-An asset that describes the release, in the format of `docs/mod-manager/INDEX_FORMAT.md` in Weft Launcher. `add-release` takes the Weft commit and tag, the deps and the mod's metadata from it. It refuses the release if any other field disagrees with what it finds (`published` aside), or if `weft.tag` doesn't name `weft.commit`:
+`mods/<id>/versions/<version>.toml`:
+
+```toml
+repo = "Zorro909/weft-mods"
+tag = "cogwork-v0.2.0"
+sha256 = "989b21912db1c53d06460cf7bbf9a979ce461c3fe197215124851a427bf7d20c"   # of <id>.zip
+```
+
+All versions of a mod come from one repo. CI copies `abi` and `deps` from the zip's `weft-mod.toml` into the index. It refuses a build if:
+
+- the zip's sha256 isn't the one pinned;
+- the attestation doesn't verify;
+- `weft-mod.toml` disagrees with the file's mod id or version;
+- a dep isn't `base` or a mod in the index.
+
+## `index.json`
 
 ```json
 {
-  "schema": 1,
-  "id": "cogwork",
-  "name": "Cogwork",
-  "summary": "Gears, item tubes and engines.",
-  "authors": ["Zorro909"],
-  "license": "MIT",
-  "homepage": "https://github.com/Zorro909/weft-mods/tree/main/cogwork",
-  "icon": "https://raw.githubusercontent.com/Zorro909/weft-mods/<commit>/cogwork/assets/textures/gui/icon.png",
-  "version": "0.2.0",
-  "channel": "release",
-  "tag": "cogwork-v0.2.0",
-  "source": { "repo": "Zorro909/weft-mods", "commit": "<the tag's commit, 40 hex>" },
-  "weft": { "tag": "v26.11.1", "commit": "<40 hex>", "abi": "<FNV-1a-64 of crates/abi/src/lib.rs, 16 hex>" },
-  "deps": [{ "id": "base" }],
-  "platforms": ["windows-x64", "linux-x64", "macos-arm64"],
-  "asset": { "name": "cogwork.zip", "url": "https://github.com/…/cogwork.zip", "size": 2642469, "sha256": "<64 hex>" }
+  "schema": 2,
+  "weft": { "v26.11.2": "d4cb65bd4fa1ac78", "v26.11.1": "f470b1cbb1f9ad91" },
+  "mods": [
+    { "id": "cogwork", "name": "Cogwork", "summary": "Gears, item tubes and engines.",
+      "repo": "Zorro909/weft-mods",
+      "builds": [
+        { "version": "0.2.0", "tag": "cogwork-v0.2.0", "abi": "f470b1cbb1f9ad91",
+          "deps": ["base"], "sha256": "989b…" } ] }
+  ],
+  "revoked": [{ "sha256": "…", "reason": "Deletes saves" }]
 }
 ```
 
-`license`, `homepage` and `icon` may be `null`. `channel` is `experimental` for an `-experimental.` version; `prerelease` for any other SemVer prerelease, such as `-rc.1`; and `release` otherwise. It depends on the version alone, not on GitHub's prerelease flag. weft-mod-action's [`release`](https://github.com/Zorro909/weft-mod-action#releasing) action writes one.
-
-## What a version file says
-
-For example:
-
-```toml
-version = "0.2.0"                       # the tag without "<id>-v"
-channel = "release"                     # release, prerelease or experimental (see above)
-tag = "cogwork-v0.2.0"
-published = "2026-11-04T02:39:03Z"      # when GitHub published the release
-deps = [{ id = "base" }]
-platforms = ["windows-x64", "linux-x64", "macos-arm64"]   # from the library headers in the zip
-
-[source]
-repo = "Zorro909/weft-mods"
-commit = "cceea7805df5902d62017d2008d1bb29ed84e152"       # the tag's commit
-
-[weft]
-tag = "v26.11.1"                        # or `git describe --tags`, e.g. v26.11.1-46-g4563878
-commit = "ff9c7128511fc0dce7719b67c9a59274d70bdd5a"
-abi = "f470b1cbb1f9ad91"                # FNV-1a-64 of crates/abi/src/lib.rs at weft.commit
-
-[asset]
-name = "cogwork.zip"
-url = "https://github.com/Zorro909/weft-mods/releases/download/cogwork-v0.2.0/cogwork.zip"
-size = 2642469
-sha256 = "989b21912db1c53d06460cf7bbf9a979ce461c3fe197215124851a427bf7d20c"
-
-# [provenance] is here only when the zip has an attestation that verified.
-
-[reviewed]
-by = "Zorro909"
-at = "2026-11-04"
-```
-
-A mod loads only into a Weft whose ABI is the same as `weft.abi`, so the launcher offers each version only to players on a matching Weft.
+- `weft` maps each Weft release tag to its mod ABI, newest first. The launcher takes the ABI of the player's Weft from it.
+- `mods` is sorted by id, and builds are newest version first. A revoked build is left out.
+- A build downloads from `https://github.com/<repo>/releases/download/<tag>/<id>.zip` and `<id>.mod.json`. The index holds no URLs.
 
 ## Trust model
 
 1. A Weft mod is native code. It runs with the player's full privileges, and no badge changes that.
-2. The index proves **where a file came from** and **that it hasn't changed**. It can't prove that a mod is harmless; that is what the human review is for.
-3. Each entry pins the zip's sha256. The launcher refuses any other bytes, even from the same URL, and downloads only from `https://github.com/<source.repo>/releases/download/`.
-4. CI re-downloads and re-verifies every pinned release before every publish, and at least weekly.
-5. With an attestation, CI also verifies which workflow built the zip, and that it built the tagged commit or its parent.
-6. CI signs the exact bytes of `index.json` with a minisign key that only the signing job of `main` can use, and that job runs no code that parses release assets. The launcher rejects an index whose signature doesn't verify, so taking over a mod repository or a GitHub account can't change what is pinned.
-7. A revoked build is never installed, and the launcher turns it off where it is installed.
+2. The index proves **which bytes were reviewed** and **which workflow built them**. It can't prove that a mod is harmless; that is what the human review is for.
+3. **The sha256 is pinned by a reviewed PR.** CI doesn't take whatever a release holds today. A zip re-uploaded after review doesn't match the pin, so CI refuses it and the launcher won't install it.
+4. **The build is attested.** The release's `<id>.mod.json` carries a GitHub build provenance attestation of the zip. CI checks it with `gh attestation verify --repo <repo>`, and the launcher checks it again itself, with an embedded Sigstore trust root:
+   - the issuer is `https://token.actions.githubusercontent.com`;
+   - the certificate is for a workflow of `https://github.com/<repo>/`;
+   - the attested digest is the zip's sha256.
 
-## Repository layout
+   So the reviewer knows which commit to read, and nobody could have uploaded a zip built on their own machine.
+5. **The index isn't signed.** GitHub Pages serves it over HTTPS, built only from `main`, and `main` changes only through a reviewed PR (see MAINTAINING.md). The attestation ties a build to the repo the index names, and no more. So whoever can change the index could:
+   - name another repo, and pin any build that repo's workflows made;
+   - hide builds or revocations.
 
-```
-mods/<id>/mod.toml                   name, summary, authors, license, homepage, icon (no mods/ yet: the index is empty)
-mods/<id>/versions/<version>.toml    one reviewed release
-weft.toml                            Weft releases and the mod ABI of each
-revoked.toml                         revoked builds
-keys/index.pub                       the minisign public key
-weftindex/                           the tooling (Python 3.11+, standard library only)
-tests/                               unit tests: python3 -m unittest discover -s tests -t .
-```
-
-`python3 -m weftindex --help` lists the commands.
+   What protects players is therefore this repository's branch protection, GitHub's HTTPS, and the review. Taking over a mod's repository or its maintainer's account can't change the pinned sha256: a new or re-uploaded build only reaches players through a new PR.
+6. A revoked build is never installed, and the launcher turns it off where it is installed.

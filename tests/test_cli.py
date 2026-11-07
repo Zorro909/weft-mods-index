@@ -1,42 +1,14 @@
-"""The CLI (`__main__.py`) and `check --since`'s choice of files."""
+"""The CLI (`__main__.py`)."""
 
 import io
-import subprocess
+import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from tests.fixtures import scratch_repo
+from tests.fixtures import WEFT_RELEASE, FakeGitHub, scratch_repo, write_mod
 from weftindex import __main__ as cli
-from weftindex import check, model
-
-
-class ChangedFilesTest(unittest.TestCase):
-    def git(self, *args):
-        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=self.root,
-                       check=True, capture_output=True)
-
-    def test_changed_version_files(self):
-        self.root = scratch_repo(self)
-        for name in ("a/versions/1.0.0.toml", "b/versions/1.0.0.toml", "b/versions/1.1.0.toml"):
-            (self.root / "mods" / name).parent.mkdir(parents=True, exist_ok=True)
-            (self.root / "mods" / name).write_text("")
-        (self.root / "mods/b/mod.toml").write_text("")
-        self.git("init", "-q", "-b", "main")
-        self.git("add", "-A")
-        self.git("commit", "-qm", "base")
-        self.git("switch", "-qc", "pr")
-        (self.root / "mods/a/versions/1.1.0.toml").write_text("new")
-        (self.root / "mods/b/mod.toml").write_text("changed")
-        (self.root / "README.md").write_text("docs")
-        self.git("add", "-A")
-        self.git("commit", "-qm", "pr")
-        got = check.changed_version_files(self.root, "main")
-        # Not b's versions: a changed mod.toml needs only the offline validation.
-        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in got),
-                         ["mods/a/versions/1.1.0.toml"])
-        with self.assertRaisesRegex(model.Error, "git diff against nope failed"):
-            check.changed_version_files(self.root, "nope")
+from weftindex import model
 
 
 class CliTest(unittest.TestCase):
@@ -59,13 +31,28 @@ class CliTest(unittest.TestCase):
             code, _, err = self.run_cli("--root", str(scratch_repo(self)), "sync-weft")
         self.assertEqual((code, err), (1, "error: GET /user: HTTP 401\n"))
 
-    def test_build_writes_under_root(self):
-        root = scratch_repo(self)
-        code, stdout, _ = self.run_cli("--root", str(root), "build",
-                                       "--generated", "2026-11-04T18:00:00Z")
-        self.assertEqual(code, 0)
-        self.assertIn("0 mods, 0 versions", stdout)
-        self.assertTrue((root / "dist/v1/index.json").is_file())
+    def test_build_writes_v2(self):
+        gh = FakeGitHub()
+        root = scratch_repo(self, [WEFT_RELEASE])
+        write_mod(root, "cogwork", {"0.2.0": gh.publish()})
+        with mock.patch.object(cli, "_github", return_value=gh):
+            code, stdout, err = self.run_cli("--root", str(root), "build")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 mods, 1 builds, 1 Weft releases, 0 revoked", stdout)
+        index = json.loads((root / "dist/v2/index.json").read_text())
+        self.assertEqual(index["mods"][0]["id"], "cogwork")
+
+    def test_add_release_writes_the_pr_description(self):
+        gh = FakeGitHub()
+        gh.publish()
+        root = scratch_repo(self, [WEFT_RELEASE])
+        with mock.patch.object(cli, "_github", return_value=gh):
+            code, stdout, err = self.run_cli("--root", str(root), "add-release",
+                                             "Zorro909/weft-mods", "cogwork-v0.2.0",
+                                             "--summary", "Gears.")
+        self.assertEqual(code, 0, err)
+        self.assertEqual((root / "dist/pr-title.txt").read_text(), "Add cogwork 0.2.0\n")
+        self.assertIn("gh pr create", stdout)
 
 
 if __name__ == "__main__":
